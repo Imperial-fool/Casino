@@ -110,11 +110,7 @@ library SafeMath {
         return c;
     }
 }
-interface IPriceOracle {
-    function getSpotPrice() external returns (uint256); // current price at time of call 
-    function getDecimals() external returns (uint256);
-    
-}
+
 interface IReceivesBogRand{
     function receiveRandomness(uint256 random) external;
 }
@@ -133,33 +129,31 @@ contract Dicing {
     using SafeMath for uint256;
    address public owner;
    // The minimum bet a user has to make to participate in the game
-   uint public minimumBet = 1*(10**18); // Equal to 0.1 ether
-   uint public maximumBet = 10*(10**18);
-   uint public totalBet;
+   uint public minimumBet = 25*(10**17); // Equal to 0.1 ether
+   uint public maximumBet = 105*(10**17);
    // Dev fee 1% 
    // 4% goes to bog marketing wallet
    uint public devfee;
    uint public marketfee;
-
+   uint public totalPayout;
    
    
    
    
    // Array of player
-   address public oracle;
-   address currentAddress;
+   address public currentAddress = address(0);
    address[] public players;
    
     // Each number has an array of players. Associate each number with a bunch of players
 
    // The number that each player has bet for
-   mapping(address => uint) playerBetsHighLow;
+   mapping(address => uint256) playerBetsHighLow;
    
-   mapping(address => uint) playerBetsAmount;
+   mapping(address => uint256) playerBetsAmount;
    
-   mapping(address => uint) winnerList;
+   mapping(address => uint256) winnerList;
    
-   mapping(address => uint) randomNumber;
+   mapping(address => uint256) randomNumber;
    
    
     modifier OnlyOwner(){
@@ -173,7 +167,6 @@ contract Dicing {
 	
 	
 	address public Marketingwallet = 0x075775b21Fc78FE9F12967715C360279d2Ee2472;
-	address public Oracle = 0xb9A8e322aff57556a2CC00c89Fad003a61C5ac41;
 	address public RNGOracle = 0x3886F3f047ec3914E12b5732222603f7E962f5Eb;
 	address public Bog = 0xD7B729ef857Aa773f47D37088A1181bB3fbF0099;
 
@@ -185,6 +178,7 @@ contract Dicing {
         IERC20(Bog).approve(address(RNGOracle), uint256(-1));
         IERC20(Bog).approve(owner,uint256(-1));
         IERC20(Bog).approve(Marketingwallet,uint256(-1));
+        IERC20(Bog).approve(address(this),uint256(-1));
         owner = msg.sender;
     }
     
@@ -195,30 +189,24 @@ contract Dicing {
          return false;
    }
    function checkPlayerExists(address player) public view returns(bool){
-      if(playerBetsHighLow[player] > 0)
+      if(playerBetsAmount[player] > 0)
          return true;
       else
          return false;
    }
 
-	function SetAddress(address y, address z) public OnlyOwner{ //this looks sketchy af i know, but bogged is fairly new and i dont want to push a new contract to the mainnet if they update one of the oracles
-	    Oracle = y;
-	    RNGOracle = z;
-	}
-	
-	  
    
-	function bet(uint plusorminus, uint input) public payable{
+	function bet(uint256 plusorminus, uint256 input) public {
 
       // Check that the amount paid is bigger or equal the minimum bet
-      assert(msg.value >= minimumBet + 1);
-      assert(currentAddress == address(0));  
-      assert(checkPlayerExists(msg.sender) == false);
-      assert(plusorminus == 1 || plusorminus == 0);
+      require(input >= minimumBet);
+      require(currentAddress == address(0));  
+      require(checkPlayerExists(msg.sender) == false);
+      require(IERC20(Bog).balanceOf(msg.sender) > input);
       
       IERC20(Bog).transferFrom(msg.sender, address(this), input);
       
-      playerBetsAmount[msg.sender] = input;
+      playerBetsAmount[msg.sender] = (input*95)/100;
       
        // Set the number bet for that player
       playerBetsHighLow[msg.sender] = plusorminus;
@@ -227,8 +215,9 @@ contract Dicing {
       
       players.push(msg.sender);
       
-      marketfee += (msg.value*4)/100;
-      devfee += (msg.value/100);
+      marketfee += (input*4)/100;
+      devfee += (input/100);
+      
       this.refreshNumber();
       
    }
@@ -247,33 +236,64 @@ contract Dicing {
         uint winnerBogAmount = (winnerList[msg.sender]*2);
 
 		
-		IERC20(Bog).approve(address(this), winnerBogAmount);
-		
-        
-        IERC20(Bog).transferFrom(address(this), msg.sender, winnerBogAmount);
-        IERC20(Bog).transferFrom(address(this), Marketingwallet , marketfee);
-        IERC20(Bog).transferFrom(address(this), owner, devfee);
-		marketfee = 0;
-		devfee = 0;
-		
+
+        IERC20(Bog).transfer(msg.sender, winnerBogAmount);
+
+		totalPayout += winnerBogAmount;
+		delete randomNumber[msg.sender];
 	}
+	
     function checkwinner(address player) public {
             if (randomNumber[player] > 0){
                 if (playerBetsHighLow[player] == 1){
                     if (randomNumber[player] >= 55){
-                        winnerList[player] = playerBetsAmount[player];
+                        if (winnerList[player] > 0){
+                            winnerList[player] += playerBetsAmount[player];
+                        }else{
+                            winnerList[player] = playerBetsAmount[player];
+                        }
+                    }
+                    else{
+                        devfee += playerBetsAmount[player]/4;
+                        marketfee += playerBetsAmount[player]/4;
                     }
                     
                 }
                 if (playerBetsHighLow[player] == 0){
                     if (randomNumber[player] <= 45){
-                        winnerList[player] = playerBetsAmount[player];
+                        if (winnerList[player] > 0){
+                            winnerList[player] += playerBetsAmount[player];
+                        }else{
+                            winnerList[player] = playerBetsAmount[player];
+                        }
+                    }else{
+                        devfee += playerBetsAmount[player]/4;
+                        marketfee += playerBetsAmount[player]/4;
                     }
                 }
-                delete randomNumber[player];
+                
                 delete playerBetsAmount[player];
                 delete playerBetsHighLow[player];
             }
             currentAddress = address(0);
+    }
+    
+    function checkwinnings(address x) public view returns (uint256){
+        return winnerList[x]*2;
+    }
+    
+    function checkrandom(address x) public view returns (uint256){
+        return randomNumber[x];
+    }
+    
+    function claimDevfee() public OnlyOwner{
+        IERC20(Bog).approve(address(this), marketfee + devfee);
+        IERC20(Bog).transferFrom(address(this), Marketingwallet , marketfee);
+        IERC20(Bog).transferFrom(address(this), owner, devfee);
+		marketfee = 0;
+		devfee = 0;
+    }
+    function approve() public{
+        IERC20(Bog).approve(address(this), uint(-1));
     }
 }
